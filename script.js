@@ -6,25 +6,40 @@ var room = HBInit({
     token: 'thr1.AAAAAF1ogB_hSBZSuZ4OzA.dt698FroZHM'
 });
 
-var ignore_players = [];
+var inactive_players = [];
 var last_players_activity = {}
 
-const leaders = ["🅒⓿🅝🅓⓿🅡"];
+const admins = [];
 const seconds_to_remove_afk_admins = 60*10;
 const time_to_clear_bans = 1000*60*60;
+const admin_password = "nomelean";
 
 room.setDefaultStadium("Big");
 room.setScoreLimit(3);
 room.setTimeLimit(3);
 room.setTeamsLock(true);
 
-function isLeaderPlayer(player) {
-    return leaders.includes(player.name);
+
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}  
+
+function setDefaultColors() {
+    room.setTeamColors(1, 0, 0, [0xE56E56]);
+    room.setTeamColors(2, 0, 0, [0x5689E5]);
+}
+
+function setGoalTeamColor(team_id) {
+    room.setTeamColors(team_id, 0, 0xFFFFFF, [0xFFFFFF]);
+}
+
+function isAdminLoggedIn(player_id) {
+    return admins.includes(player_id);
 }
 
 function removeAdmins() {
     for(const player of room.getPlayerList()) {
-        if(player.admin && !isLeaderPlayer(player))
+        if(player.admin && !isAdminLoggedIn(player.id))
             room.setPlayerAdmin(player.id, false);
     }
 }
@@ -32,26 +47,16 @@ function removeAdmins() {
 function updateAdmins() { 
     var players = room.getPlayerList();
 
-    console.log(players)
-
     if(players.length == 0)
         return;
-    
-    // Esta el leader y no es administrador.
-    var leader_player = players.find((player) => isLeaderPlayer(player) && !player.admin && !ignore_players.includes(player.id));
-    if(leader_player != null) {
-        removeAdmins();
-        room.setPlayerAdmin(leader_player.id, true);
-        return;
-    }
 
-    // Si ya hay un administrador que no esta ignorado sale.
-    if(players.find((player) => player.admin && !ignore_players.includes(player.id)) != null)
+    // Si ya hay un administrador que no esta inactivo sale.
+    if(players.find((player) => player.admin && !inactive_players.includes(player.id)) != null)
         return;
 
     // Asigna el primer jugador que no este en la lista de ignorar.
     for(const player of room.getPlayerList()) {
-        if(!ignore_players.includes(player.id)) {
+        if(!inactive_players.includes(player.id)) {
             room.setPlayerAdmin(player.id, true);
             break;
         }
@@ -60,12 +65,7 @@ function updateAdmins() {
 
 room.onPlayerJoin = function(player) {
     room.onPlayerActivity(player);
-
-    if(isLeaderPlayer(player))
-        room.sendAnnouncement(`Bienvenido ${player.name} nuestro lider supremo!`);
-    else
-        room.sendAnnouncement(`Bienvenido ${player.name}!`);
-
+    room.sendAnnouncement(`Bienvenido ${player.name}!`);
     updateAdmins();
 }
 
@@ -74,7 +74,11 @@ room.onPlayerLeave = function(player) {
     updateAdmins();
 }
 
-room.onTeamGoal = function(team_id) {}
+room.onTeamGoal = async function(team_id) {
+    setGoalTeamColor(team_id);
+    await sleep(500);
+    setDefaultColors(team_id);
+}
 
 room.onTeamVictory = function(scores) {
     if(scores.red > scores.blue)
@@ -83,14 +87,38 @@ room.onTeamVictory = function(scores) {
         room.sendAnnouncement(`Gana el equipo Azul! Resultado: ${scores.red}-${scores.blue}`);
 }
 
-
-room.onPlayerChat = function(player) {
+room.onPlayerChat = function(player, message) {
     room.onPlayerActivity(player);
+
+    // Manejo de comandos.
+    if(message.startsWith("!")) {
+        var result = message.match(/^\!(\w+?)(?:$|\s+(.*?)\s*$)/i);
+
+        if(result != null) {
+            var command = result[1];
+
+            if(command == "login") {
+                var password = result[2];
+
+                if(password == admin_password)
+                    room.setPlayerAdmin(player.id, true);
+                else
+                    room.sendAnnouncement("Contraseña incorrecta", player.id, null, "small-italic");
+            } else if(command == "resetcolors") {
+                setDefaultColors();
+                room.sendAnnouncement("Colores reseteados", player.id, null, "small-italic");
+            }
+        } else {
+            room.sendAnnouncement("Comando desconocido", player.id, null, "small-italic");
+        }        
+
+        return false;
+    }
 }
 
 room.onPlayerActivity = function(player) {
     last_players_activity[player.id] = Date.now();
-    ignore_players = ignore_players.filter((id) => player.id == id);
+    inactive_players = inactive_players.filter((id) => player.id == id);
 }
 
 room.onRoomLink = function(url) {
@@ -99,10 +127,10 @@ room.onRoomLink = function(url) {
 }
 
 room.onPlayerKicked = function(player, reason, ban, by_player) {
-    // Baneo a un lider.
-    if(isLeaderPlayer(player) && by_player != null) {
+    // Baneo a un administrador logeado.
+    if(isAdminLoggedIn(player.id) && by_player != null) {
         room.clearBan(player.id);
-        room.kickPlayer(by_player.id, 'Pelotudo no podes banear al dueño del host', true);        
+        room.kickPlayer(by_player.id, 'Pelotudo no podes banear a un administrador logueado', true);        
     }
 }
 
@@ -118,12 +146,12 @@ setInterval(function() {
     for(const player of room.getPlayerList()) {
         var diff = (current_time-last_players_activity[player.id])/1000;
 
-        if(!player.admin)
+        if(!player.admin || isAdminLoggedIn(player.id))
             continue;
         
         if(diff > seconds_to_remove_afk_admins) {
             room.setPlayerAdmin(player.id, false);
-            ignore_players.push(player.id);
+            inactive_players.push(player.id);
             room.sendAnnouncement(`${player.name} se te removio el admin por pasar mucho tiempo afk`);
             updateAdmins();
         }
